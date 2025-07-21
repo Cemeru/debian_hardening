@@ -4,7 +4,7 @@
 # Script: debian-hardening.sh
 # Purpose: Debian 12 hardening automation
 # Author: Cemeru
-# Version: 1.2
+# Version: 1.3
 # Date: 2025-07-21
 # ───────────────────────────────────────────────────────────
 
@@ -59,12 +59,7 @@ check_os() {
 }
 
 check_internet() {
-    if ! command -v curl &>/dev/null; then
-        log_message "ERROR" "curl is required for internet check but not found."
-        exit 1
-    fi
-
-    if ! curl -s --head http://google.com | head -n 1 | grep "HTTP/"; then
+    if ! ping -c1 8.8.8.8 >/dev/null 2>&1; then
         log_message "ERROR" "No internet connection detected."
         exit 1
     fi
@@ -176,7 +171,7 @@ harden_ssh() {
     safe_sshd_config_update "PermitRootLogin" "no"
     safe_sshd_config_update "PasswordAuthentication" "no"
 
-    if systemctl list-units --full -all | grep -q sshd.service; then
+    if systemctl is-active sshd &>/dev/null; then
         systemctl restart sshd
     else
         systemctl restart ssh
