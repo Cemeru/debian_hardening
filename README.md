@@ -1,7 +1,7 @@
 # Debian Hardening Script
 
 **Author:** Cemeru  
-**Version:** 1.4  
+**Version:** 2.0
 **Date:** 2025-07-21  
 **Target OS:** Debian 12 (clean instance)  
 **License:** MIT
