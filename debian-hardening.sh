@@ -4,7 +4,7 @@
 # Script: debian-hardening.sh
 # Purpose: Debian 12 hardening automation
 # Author: Cemeru
-# Version: 1.0
+# Version: 1.1
 # Date: 2025-07-21
 # ───────────────────────────────────────────────────────────
 
@@ -70,12 +70,16 @@ update_system() {
 }
 
 install_packages() {
-    local packages=(
-        ufw fail2ban apparmor apparmor-profiles apparmor-utils aide
-        auditd cron logrotate
-    )
     log_message "INFO" "Installing required packages..."
-    apt-get install -y "${packages[@]}"
+    local packages=(ufw fail2ban apparmor apparmor-profiles apparmor-utils aide auditd cron logrotate)
+
+    for pkg in "${packages[@]}"; do
+        if ! dpkg -l | grep -qw "$pkg"; then
+            apt-get install -y "$pkg"
+        else
+            log_message "INFO" "Package $pkg already installed."
+        fi
+    done
 }
 
 configure_firewall() {
@@ -113,29 +117,43 @@ harden_sysctl() {
     log_message "INFO" "Hardening kernel parameters..."
     backup_file /etc/sysctl.conf
 
-    cat <<EOF >> /etc/sysctl.conf
+    declare -A sysctl_settings=(
+        ["net.ipv4.ip_forward"]=0
+        ["net.ipv4.conf.all.accept_redirects"]=0
+        ["net.ipv4.conf.all.send_redirects"]=0
+        ["net.ipv4.conf.all.accept_source_route"]=0
+        ["net.ipv4.conf.all.log_martians"]=1
+        ["net.ipv4.conf.default.rp_filter"]=1
+        ["net.ipv4.tcp_syncookies"]=1
+        ["kernel.randomize_va_space"]=2
+    )
 
-# Hardened settings
-net.ipv4.ip_forward=0
-net.ipv4.conf.all.accept_redirects=0
-net.ipv4.conf.all.send_redirects=0
-net.ipv4.conf.all.accept_source_route=0
-net.ipv4.conf.all.log_martians=1
-net.ipv4.conf.default.rp_filter=1
-net.ipv4.tcp_syncookies=1
-kernel.randomize_va_space=2
-EOF
+    for key in "${!sysctl_settings[@]}"; do
+        sed -i "/^$key\s*=.*/d" /etc/sysctl.conf
+        echo "$key = ${sysctl_settings[$key]}" >> /etc/sysctl.conf
+    done
 
     sysctl -p
 }
+
+safe_sshd_config_update() {
+    local key="$1"
+    local value="$2"
+    if grep -Eq "^$key\s+$value" /etc/ssh/sshd_config; then
+        log_message "INFO" "$key already set to $value"
+    else
+        sed -i "s/^#\?$key .*/$key $value/" /etc/ssh/sshd_config || echo "$key $value" >> /etc/ssh/sshd_config
+    fi
+}
+
 
 harden_ssh() {
     log_message "INFO" "Hardening SSH configuration..."
     backup_file /etc/ssh/sshd_config
 
-    sed -i 's/^#Port .*/Port 22/' /etc/ssh/sshd_config
-    sed -i 's/^#PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
-    sed -i 's/^#PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
+    safe_sshd_config_update "Port" "22"
+    safe_sshd_config_update "PermitRootLogin" "no"
+    safe_sshd_config_update "PasswordAuthentication" "no"
 
     systemctl restart sshd
 }
@@ -177,6 +195,38 @@ generate_security_report() {
     echo "AIDE database location: /var/lib/aide/aide.db" >> /root/hardening_report.txt
 }
 
+configure_logrotate() {
+    log_message "INFO" "Setting up logrotate for script logs..."
+    local conf="/etc/logrotate.d/debian-harden"
+    cat <<EOF > "$conf"
+/var/log/debian-harden.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    create 0640 root adm
+}
+EOF
+}
+
+verify_services() {
+    log_message "INFO" "Verifying service statuses..."
+    for svc in ufw apparmor fail2ban auditd; do
+        if ! systemctl is-active --quiet "$svc"; then
+            log_message "ERROR" "Service $svc is not running!"
+        else
+            log_message "INFO" "Service $svc is active."
+        fi
+    done
+}
+
+verify_script_integrity() {
+    log_message "INFO" "Computing script checksum..."
+    sha256sum "$0" > /root/hardening_script.sha256
+}
+
+
 main() {
     local start_time
     start_time=$(date "+%Y-%m-%d %H:%M:%S")
@@ -197,7 +247,10 @@ main() {
     enable_auditd
     set_login_banner
     generate_security_report
-
+    verify_services
+    configure_logrotate
+    verify_script_integrity
+    
     local end_time
     end_time=$(date "+%Y-%m-%d %H:%M:%S")
     log_message "INFO" "Hardening completed successfully."
