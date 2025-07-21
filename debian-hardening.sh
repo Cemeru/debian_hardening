@@ -4,7 +4,7 @@
 # Script: debian-hardening.sh
 # Purpose: Debian 12 hardening automation
 # Author: Cemeru
-# Version: 1.3
+# Version: 1.4
 # Date: 2025-07-21
 # ───────────────────────────────────────────────────────────
 
@@ -120,7 +120,7 @@ configure_aide() {
 backup_file() {
     local file="$1"
     if [[ -f "$file" ]]; then
-        cp "$file" "$BACKUP_DIR/$(basename "$file").bak"
+        cp "$file" "$BACKUP_DIR/$(basename "$file").bak-$(date +%Y%m%d%H%M%S)"
     fi
 }
 
