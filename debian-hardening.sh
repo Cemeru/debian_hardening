@@ -4,7 +4,7 @@
 # Script: debian-hardening.sh
 # Purpose: Debian 12 hardening automation
 # Author: Cemeru
-# Version: 1.1
+# Version: 1.2
 # Date: 2025-07-21
 # ───────────────────────────────────────────────────────────
 
@@ -15,13 +15,14 @@ LOG_FILE="/var/log/debian-harden.log"
 BACKUP_DIR="/var/backups/debian-harden"
 mkdir -p "$BACKUP_DIR"
 
-trap 'handle_error ${LINENO}' ERR
-
 handle_error() {
     local line="$1"
-    log_message "ERROR" "Script failed at line $line."
-    exit 1
+    local err="$2"
+    log_message "ERROR" "Script failed at line $line with exit code $err."
+    exit $err
 }
+
+trap 'handle_error ${LINENO} $?' ERR
 
 log_message() {
     local level="$1"
@@ -58,7 +59,12 @@ check_os() {
 }
 
 check_internet() {
-    if ! ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+    if ! command -v curl &>/dev/null; then
+        log_message "ERROR" "curl is required for internet check but not found."
+        exit 1
+    fi
+
+    if ! curl -s --head http://google.com | head -n 1 | grep "HTTP/"; then
         log_message "ERROR" "No internet connection detected."
         exit 1
     fi
@@ -66,7 +72,7 @@ check_internet() {
 
 update_system() {
     log_message "INFO" "Updating system packages..."
-    apt-get update -y && apt-get upgrade -y
+    apt-get update && apt-get upgrade -y
 }
 
 install_packages() {
@@ -74,7 +80,7 @@ install_packages() {
     local packages=(ufw fail2ban apparmor apparmor-profiles apparmor-utils aide auditd cron logrotate)
 
     for pkg in "${packages[@]}"; do
-        if ! dpkg -l | grep -qw "$pkg"; then
+        if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
             apt-get install -y "$pkg"
         else
             log_message "INFO" "Package $pkg already installed."
@@ -102,8 +108,18 @@ configure_fail2ban() {
 
 configure_aide() {
     log_message "INFO" "Initializing AIDE..."
-    aideinit
-    cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+    if ! command -v aideinit &>/dev/null; then
+        log_message "WARN" "aideinit command not found, skipping AIDE initialization."
+        return
+    fi
+    
+    if [ ! -f /var/lib/aide/aide.db ]; then
+        aide --init
+        cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+        log_message "INFO" "AIDE initialized."
+    else
+        log_message "INFO" "AIDE already initialized. Skipping."
+    fi
 }
 
 backup_file() {
@@ -139,10 +155,15 @@ harden_sysctl() {
 safe_sshd_config_update() {
     local key="$1"
     local value="$2"
-    if grep -Eq "^$key\s+$value" /etc/ssh/sshd_config; then
+    
+    if grep -Eq "^\s*#?\s*$key\s+$value" /etc/ssh/sshd_config; then
         log_message "INFO" "$key already set to $value"
     else
-        sed -i "s/^#\?$key .*/$key $value/" /etc/ssh/sshd_config || echo "$key $value" >> /etc/ssh/sshd_config
+        if grep -q "^\s*#?\s*$key" /etc/ssh/sshd_config; then
+            sed -i -E "s|^\s*#?\s*${key}\s+.*|${key} ${value}|" /etc/ssh/sshd_config
+        else
+            echo "${key} ${value}" >> /etc/ssh/sshd_config
+        fi
     fi
 }
 
@@ -155,7 +176,11 @@ harden_ssh() {
     safe_sshd_config_update "PermitRootLogin" "no"
     safe_sshd_config_update "PasswordAuthentication" "no"
 
-    systemctl restart sshd
+    if systemctl list-units --full -all | grep -q sshd.service; then
+        systemctl restart sshd
+    else
+        systemctl restart ssh
+    fi
 }
 
 set_permissions() {
@@ -190,7 +215,14 @@ generate_security_report() {
     ufw status verbose >> /root/hardening_report.txt
     echo "" >> /root/hardening_report.txt
     echo "AppArmor status:" >> /root/hardening_report.txt
-    aa-status >> /root/hardening_report.txt
+
+    if command -v aa-status &>/dev/null; then
+        aa-status >> /root/hardening_report.txt
+    else
+        echo "aa-status not available" >> /root/hardening_report.txt
+    fi
+
+    
     echo "" >> /root/hardening_report.txt
     echo "AIDE database location: /var/lib/aide/aide.db" >> /root/hardening_report.txt
 }
